@@ -2,6 +2,7 @@ package com.example.harness.llm;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.example.harness.tool.ToolExecutor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -41,26 +42,19 @@ public class QwenService implements LlmClient {
 
     @Override
     public String chat(String question) {
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalStateException("请配置 DASHSCOPE_API_KEY");
-        }
-
         List<Object> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", question));
         for (int round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-            JsonNode message = request(messages, round == MAX_TOOL_ROUNDS ? "none" : "auto");
-            JsonNode toolCalls = message.path("tool_calls");
-            if (toolCalls.isMissingNode() || toolCalls.isNull()
-                    || (toolCalls.isArray() && toolCalls.isEmpty())) {
+            JsonNode message = requestChoice(messages, round == MAX_TOOL_ROUNDS ? "none" : "auto")
+                    .path("message");
+            JsonNode toolCalls = getToolCalls(message);
+            if (toolCalls.isEmpty()) {
                 //从返回结果里取出回答
                 JsonNode content = message.path("content");
                 if (!content.isTextual() || content.asText().isBlank()) {
                     throw new IllegalStateException("千问 API 没有返回有效回答");
                 }
                 return content.asText();
-            }
-            if (!toolCalls.isArray()) {
-                throw new IllegalStateException("千问返回的 tool_calls 格式无效");
             }
             if (round == MAX_TOOL_ROUNDS) {
                 throw new IllegalStateException("工具调用超过最大轮数");
@@ -74,22 +68,7 @@ public class QwenService implements LlmClient {
                 if (id.isBlank() || !"function".equals(toolCall.path("type").asText())) {
                     throw new IllegalStateException("千问返回的工具调用缺少 ID 或类型无效");
                 }
-                String result;
-                if (!"get_project_info".equals(name)) {
-                    result = "工具错误：不支持的工具 " + name;
-                } else {
-                    try {
-                        JsonNode arguments = objectMapper.readTree(
-                                toolCall.path("function").path("arguments").asText());
-                        if (arguments == null || !arguments.isObject() || !arguments.isEmpty()) {
-                            result = "工具错误：get_project_info 的参数必须是空对象 {}";
-                        } else {
-                            result = toolExecutor.execute(name);
-                        }
-                    } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-                        result = "工具错误：参数不是有效 JSON";
-                    }
-                }
+                String result = executeToolWithArguments(toolCall, name);
                 messages.add(Map.of("role", "tool", "tool_call_id", id, "content", result));
             }
         }
@@ -99,14 +78,11 @@ public class QwenService implements LlmClient {
     public String chatWithTools(String question) {
         JsonNode choice = requestChoice(List.of(Map.of("role", "user", "content", question)), "auto");
         JsonNode message = choice.path("message");
-        JsonNode toolCalls = message.path("tool_calls");
+        JsonNode toolCalls = getToolCalls(message);
 
         // 模型没有请求调用工具
-        if (toolCalls.isMissingNode() || toolCalls.isNull() || toolCalls.isEmpty()) {
+        if (toolCalls.isEmpty()) {
             return message.path("content").asText();
-        }
-        if (!toolCalls.isArray()) {
-            throw new IllegalStateException("千问返回的 tool_calls 格式无效");
         }
 
         // 先执行模型请求的第一个工具
@@ -116,48 +92,37 @@ public class QwenService implements LlmClient {
     }
 
     public String getFinalAnswer(List<Map<String, Object>> messages) {
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalStateException("请配置 DASHSCOPE_API_KEY");
-        }
-
+        //组装请求体
         Map<String, Object> requestBody = Map.of(
                 "model", model,
+                //对话记录
                 "messages", messages
         );
 
-        JsonNode response = restClient.post()
-                .uri("/chat/completions")
-                .header("Authorization", "Bearer " + apiKey)
-                .header("Content-Type", "application/json")
-                .body(requestBody)
-                .retrieve()
-                .body(JsonNode.class);
+        //向大模型发送 HTTP 请求，模型根据工具结果组织回答
+        JsonNode choice = sendRequest(requestBody);
 
-        if (response == null || !response.path("choices").isArray()
-                || response.path("choices").isEmpty()) {
-            throw new IllegalStateException("千问 API 没有返回有效回答");
-        }
-
-        return response.path("choices")
-                .get(0)
-                .path("message")
+        //取出模型回答并返回
+        return choice.path("message")
                 .path("content")
                 .asText();
     }
 
-    private JsonNode request(List<Object> messages, String toolChoice) {
-        return requestChoice(messages, toolChoice).path("message");
-    }
-
     private JsonNode requestChoice(List<Object> messages, String toolChoice) {
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalStateException("请配置 DASHSCOPE_API_KEY");
-        }
-        //工具描述
         Map<String, Object> requestBody = Map.of(
                 "model", model,
                 "messages", messages,
-                "tools", List.of(Map.of(
+                "tools", toolDefinitions(),
+                "tool_choice", toolChoice
+        );
+
+        //真正发送 HTTP 请求，模型提出工具调用
+        return sendRequest(requestBody);
+    }
+
+    private List<Map<String, Object>> toolDefinitions() {
+        //工具描述
+        return List.of(Map.of(
                         "type", "function",
                         "function", Map.of(
                                 "name", "get_project_info",
@@ -169,11 +134,13 @@ public class QwenService implements LlmClient {
                                         "required", List.of(),//哪些参数必填
                                         "additionalProperties", false)//是否允许额外的参数
                         )
-                )),
-                "tool_choice", toolChoice
-        );
+                ));
+    }
 
-        //真正发送 HTTP 请求
+    private JsonNode sendRequest(Map<String, Object> requestBody) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new IllegalStateException("请配置 DASHSCOPE_API_KEY");
+        }
         JsonNode response = restClient.post()
                 .uri("/chat/completions")
                 .header("Authorization", "Bearer " + apiKey)
@@ -182,6 +149,7 @@ public class QwenService implements LlmClient {
                 .retrieve()
                 .body(JsonNode.class);
 
+        //查响应是否有效
         if (response == null || !response.path("choices").isArray()
                 || response.path("choices").isEmpty()) {
             throw new IllegalStateException(
@@ -195,5 +163,32 @@ public class QwenService implements LlmClient {
             throw new IllegalStateException("千问 API 返回的 message 格式无效");
         }
         return response.path("choices").get(0);
+    }
+
+    private JsonNode getToolCalls(JsonNode message) {
+        JsonNode toolCalls = message.path("tool_calls");
+        if (toolCalls.isMissingNode() || toolCalls.isNull()) {
+            return objectMapper.createArrayNode();
+        }
+        if (!toolCalls.isArray()) {
+            throw new IllegalStateException("千问返回的 tool_calls 格式无效");
+        }
+        return toolCalls;
+    }
+
+    private String executeToolWithArguments(JsonNode toolCall, String name) {
+        if (!"get_project_info".equals(name)) {
+            return "工具错误：不支持的工具 " + name;
+        }
+        try {
+            JsonNode arguments = objectMapper.readTree(
+                    toolCall.path("function").path("arguments").asText());
+            if (arguments == null || !arguments.isObject() || !arguments.isEmpty()) {
+                return "工具错误：get_project_info 的参数必须是空对象 {}";
+            }
+            return toolExecutor.execute(name);
+        } catch (JsonProcessingException e) {
+            return "工具错误：参数不是有效 JSON";
+        }
     }
 }
