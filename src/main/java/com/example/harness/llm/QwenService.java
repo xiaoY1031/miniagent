@@ -115,6 +115,36 @@ public class QwenService implements LlmClient {
         return toolExecutor.execute(toolName);
     }
 
+    public String getFinalAnswer(List<Map<String, Object>> messages) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new IllegalStateException("请配置 DASHSCOPE_API_KEY");
+        }
+
+        Map<String, Object> requestBody = Map.of(
+                "model", model,
+                "messages", messages
+        );
+
+        JsonNode response = restClient.post()
+                .uri("/chat/completions")
+                .header("Authorization", "Bearer " + apiKey)
+                .header("Content-Type", "application/json")
+                .body(requestBody)
+                .retrieve()
+                .body(JsonNode.class);
+
+        if (response == null || !response.path("choices").isArray()
+                || response.path("choices").isEmpty()) {
+            throw new IllegalStateException("千问 API 没有返回有效回答");
+        }
+
+        return response.path("choices")
+                .get(0)
+                .path("message")
+                .path("content")
+                .asText();
+    }
+
     private JsonNode request(List<Object> messages, String toolChoice) {
         return requestChoice(messages, toolChoice).path("message");
     }
