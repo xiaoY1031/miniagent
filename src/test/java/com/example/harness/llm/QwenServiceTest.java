@@ -13,7 +13,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class QwenServiceTest {
-    /** 验证请求不携带工具说明，返回包含响应 ID 和 choices 的完整 JSON。 */
+    /** 验证请求携带工具说明，返回包含响应 ID 和 choices 的完整 JSON。 */
     @Test
     void returnsFullResponseForFinalAnswer() {
         RestClient.Builder builder = RestClient.builder();
@@ -21,7 +21,7 @@ class QwenServiceTest {
         QwenService service = new QwenService("test-key", "https://example.test/v1",
                 "qwen-plus", new ToolExecutor(new ProjectInfoTool()), new ObjectMapper(), builder);
         server.expect(requestTo("https://example.test/v1/chat/completions"))
-                .andExpect(jsonPath("$.tools").doesNotExist())
+                .andExpect(jsonPath("$.tools[0].function.name").value("get_project_info"))
                 .andExpect(jsonPath("$.messages[0].tool_call_id").value("call_1"))
                 .andRespond(withSuccess("""
                         {"id":"response_1","choices":[{"message":{"role":"assistant","content":"CampusX 使用 Redis。"}}]}
@@ -78,7 +78,7 @@ class QwenServiceTest {
                 .andExpect(jsonPath("$.messages[2].role").value("tool"))
                 .andExpect(jsonPath("$.messages[2].tool_call_id").value("call_1"))
                 .andExpect(jsonPath("$.messages[2].content").value("CampusX 项目信息"))
-                .andExpect(jsonPath("$.tools").doesNotExist())
+                .andExpect(jsonPath("$.tool_choice").value("auto"))
                 .andRespond(withSuccess("""
                         {"choices":[{"message":{"role":"assistant","content":"这是模型整理后的项目信息。"}}]}
                         """, MediaType.APPLICATION_JSON));

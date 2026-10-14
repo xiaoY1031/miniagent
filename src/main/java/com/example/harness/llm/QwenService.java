@@ -120,7 +120,7 @@ public class QwenService implements LlmClient {
     }
 
     /**
-     * 将调用方准备好的对话记录发送给模型，返回完整 JSON 响应，不附带工具说明。
+     * 将调用方准备好的对话记录和工具说明发送给模型，返回完整 JSON 响应。
      * 由调用方判断 content 和 tool_calls，不在本方法中提取最终答案。
      * 使用工具结果时，messages 应包含用户消息、原始 assistant 工具调用消息，
      * 以及带有对应 tool_call_id 的 tool 结果消息；本方法不自动组装这些记录。
@@ -130,7 +130,9 @@ public class QwenService implements LlmClient {
         Map<String, Object> requestBody = Map.of(
                 "model", model,
                 //对话记录
-                "messages", messages
+                "messages", messages,
+                "tools", toolDefinitions(),
+                "tool_choice", "auto"
         );
 
         //向大模型发送 HTTP 请求，模型根据工具结果组织回答
