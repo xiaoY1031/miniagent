@@ -9,10 +9,33 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.*;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class QwenServiceTest {
+    /** 验证模型持续请求工具时恰好请求十轮，并抛出明确的循环上限异常。 */
+    @Test
+    void stopsAgentAfterTenModelRequests() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        QwenService service = new QwenService("test-key", "https://example.test/v1",
+                "qwen-plus", new ToolExecutor(new ProjectInfoTool()), new ObjectMapper(), builder);
+        for (int round = 0; round < 10; round++) {
+            server.expect(requestTo("https://example.test/v1/chat/completions"))
+                    .andExpect(jsonPath("$.tools[0].function.name").value("get_project_info"))
+                    .andExpect(jsonPath("$.tool_choice").value("auto"))
+                    .andRespond(withSuccess("""
+                            {"choices":[{"message":{"role":"assistant","content":null,
+                            "tool_calls":[{"id":"call_1","type":"function","function":{
+                            "name":"get_project_info","arguments":"{}"}}]}}]}
+                            """, MediaType.APPLICATION_JSON));
+        }
+        var error = assertThrows(IllegalStateException.class, () -> service.runAgent("介绍项目"));
+        assertEquals("Agent 超过最大循环次数 10 轮", error.getMessage());
+        server.verify();
+    }
+
     /** 验证请求携带工具说明，返回包含响应 ID 和 choices 的完整 JSON。 */
     @Test
     void returnsFullResponseForFinalAnswer() {

@@ -21,7 +21,7 @@ public class QwenService implements LlmClient {
     private final String model;
     private final ToolExecutor toolExecutor;
     private final ObjectMapper objectMapper;
-    private static final int MAX_TOOL_ROUNDS = 4;
+    private static final int MAX_AGENT_ROUNDS = 10;
 
     //QwenService 的构造方法，负责初始化服务。Spring 启动时会自动提供这些参数并创建对象，不是每次用户提问都执行。
     public QwenService(
@@ -42,15 +42,24 @@ public class QwenService implements LlmClient {
     }
 
     /**
-     * 接收用户问题，循环执行并回传工具结果，返回模型的最终文本回答。
-     * 最多执行四轮工具调用，之后再请求一次不使用工具的回答。
+     * 实现 LlmClient 的聊天入口，委托 runAgent 执行最多十轮的智能体流程。
      */
     @Override
     public String chat(String question) {
-        List<Object> messages = new ArrayList<>();
+        return runAgent(question);
+    }
+
+    /**
+     * 创建独立的可变对话记录，最多请求模型十轮，每轮都携带工具说明。
+     * 无工具调用时返回回答；有调用时保存原始消息、执行全部工具并追加结果，继续下一轮。
+     * 十轮内未得到最终回答则抛出异常，避免无限循环。
+     */
+    public String runAgent(String question) {
+        List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", question));
-        for (int round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-            JsonNode message = requestChoice(messages, round == MAX_TOOL_ROUNDS ? "none" : "auto")
+        for (int round = 0; round < MAX_AGENT_ROUNDS; round++) {
+            JsonNode response = getFinalAnswer(messages);
+            JsonNode message = extractChoice(response)
                     .path("message");
             JsonNode toolCalls = getToolCalls(message);
             if (toolCalls.isEmpty()) {
@@ -61,12 +70,9 @@ public class QwenService implements LlmClient {
                 }
                 return content.asText();
             }
-            if (round == MAX_TOOL_ROUNDS) {
-                throw new IllegalStateException("工具调用超过最大轮数");
-            }
 
             // 保留模型的完整工具调用消息，再逐个追加对应的执行结果。
-            messages.add(message);
+            messages.add(objectMapper.convertValue(message, new TypeReference<Map<String, Object>>() {}));
             for (JsonNode toolCall : toolCalls) {
                 String id = toolCall.path("id").asText();
                 String name = toolCall.path("function").path("name").asText();
@@ -77,7 +83,7 @@ public class QwenService implements LlmClient {
                 messages.add(Map.of("role", "tool", "tool_call_id", id, "content", result));
             }
         }
-        throw new IllegalStateException("工具调用未完成");
+        throw new IllegalStateException("Agent 超过最大循环次数 10 轮");
     }
 
     /**
