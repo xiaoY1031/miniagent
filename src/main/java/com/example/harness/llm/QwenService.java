@@ -113,12 +113,10 @@ public class QwenService implements LlmClient {
         );
 
         //向大模型发送 HTTP 请求，模型根据工具结果组织回答
-        JsonNode choice = sendRequest(requestBody);
+        JsonNode response = sendRequest(requestBody);
 
         //取出模型回答并返回
-        return choice.path("message")
-                .path("content")
-                .asText();
+        return extractAnswer(response);
     }
 
     /**
@@ -134,7 +132,7 @@ public class QwenService implements LlmClient {
         );
 
         //真正发送 HTTP 请求，模型可能返回普通文本或工具调用；none 时不应提出工具调用。
-        return sendRequest(requestBody);
+        return extractChoice(sendRequest(requestBody));
     }
 
     /** 返回可用工具的 JSON Schema 描述；当前仅支持无参数的 get_project_info。 */
@@ -156,14 +154,14 @@ public class QwenService implements LlmClient {
     }
 
     /**
-     * 使用密钥向千问发送请求，检查 choices 和 message 结构，返回第一条 choice。
-     * HTTP 请求失败时由 RestClient 抛出异常；响应结构异常时抛出 IllegalStateException。
+     * 使用密钥向千问发送请求，返回完整 JSON 响应，不解析 choices 或回答正文。
+     * HTTP 请求失败时由 RestClient 抛出异常；响应结构由解析方法检查。
      */
     private JsonNode sendRequest(Map<String, Object> requestBody) {
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException("请配置 DASHSCOPE_API_KEY");
         }
-        JsonNode response = restClient.post()
+        return restClient.post()
                 .uri("/chat/completions")
                 .header("Authorization", "Bearer " + apiKey)
                 .header("Content-Type", "application/json")
@@ -171,6 +169,10 @@ public class QwenService implements LlmClient {
                 .retrieve()
                 .body(JsonNode.class);
 
+    }
+
+    /** 检查完整响应是否包含 choice 和 message，返回第一条 choice；不要求包含回答正文。 */
+    private JsonNode extractChoice(JsonNode response) {
         //检查响应是否包含 choice 和 message；这里不检查回答文本是否为空。
         if (response == null || !response.path("choices").isArray()
                 || response.path("choices").isEmpty()) {
@@ -185,6 +187,15 @@ public class QwenService implements LlmClient {
             throw new IllegalStateException("千问 API 返回的 message 格式无效");
         }
         return response.path("choices").get(0);
+    }
+
+    /** 检查完整响应并提取第一条回答正文；缺失、非文本或空白正文均视为无效回答。 */
+    private String extractAnswer(JsonNode response) {
+        JsonNode content = extractChoice(response).path("message").path("content");
+        if (!content.isTextual() || content.asText().isBlank()) {
+            throw new IllegalStateException("千问 API 没有返回有效回答正文");
+        }
+        return content.asText();
     }
 
     /** 从 assistant 消息提取工具调用数组；缺失或 null 时返回空数组，类型错误时抛出异常。 */
