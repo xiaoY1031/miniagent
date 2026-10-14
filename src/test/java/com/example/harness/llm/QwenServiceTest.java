@@ -13,6 +13,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class QwenServiceTest {
+    /** 模拟模型提出工具调用，验证只执行第一个工具并直接返回结果。 */
     @Test
     void executesFirstToolCallAndReturnsItsResult() {
         RestClient.Builder builder = RestClient.builder();
@@ -37,6 +38,7 @@ class QwenServiceTest {
     }
 
     @Test
+    /** 模拟两次模型响应，验证多轮 chat 回传工具结果时保留对应的 tool_call_id。 */
     void executesToolAndSendsResultBackWithMatchingId() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
@@ -63,6 +65,7 @@ class QwenServiceTest {
     }
 
     @Test
+    /** 模拟普通文本响应，验证 chatWithTools 无工具调用时直接返回回答。 */
     void returnsOrdinaryAnswerWithoutCallingTool() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

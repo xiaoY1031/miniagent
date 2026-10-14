@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class ProjectInfoTool {
 
+    /** 返回代码中固定的 CampusX 项目信息，不读取数据库或项目文件。 */
     public String getProjectInfo() {
         return """
                 项目名称：CampusX

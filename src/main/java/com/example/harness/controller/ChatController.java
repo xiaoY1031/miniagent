@@ -11,10 +11,12 @@ public class ChatController {
 
     private final QwenService qwenService;
 
+    /** 由 Spring 注入千问服务，供聊天接口使用。 */
     public ChatController(QwenService qwenService) {
         this.qwenService = qwenService;
     }
 
+    /** 接收 message，执行单次模型请求及第一个工具调用，将结果封装为 answer 返回。 */
     @PostMapping
     public Map<String, String> chat(
             @RequestBody ChatRequest request) {

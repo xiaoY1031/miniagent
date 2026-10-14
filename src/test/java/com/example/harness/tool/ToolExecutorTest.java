@@ -16,6 +16,7 @@ class ToolExecutorTest {
     @Autowired
     private ToolExecutor toolExecutor;
 
+    /** 验证 Spring 注入的执行器能调用本地工具；不发送真实模型 API 请求。 */
     @Test
     void shouldExecuteProjectInfoTool() {
         String result = toolExecutor.execute("get_project_info");

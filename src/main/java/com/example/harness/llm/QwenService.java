@@ -40,6 +40,10 @@ public class QwenService implements LlmClient {
                 .build();
     }
 
+    /**
+     * 接收用户问题，循环执行并回传工具结果，返回模型的最终文本回答。
+     * 最多执行四轮工具调用，之后再请求一次不使用工具的回答。
+     */
     @Override
     public String chat(String question) {
         List<Object> messages = new ArrayList<>();
@@ -75,6 +79,10 @@ public class QwenService implements LlmClient {
         throw new IllegalStateException("工具调用未完成");
     }
 
+    /**
+     * 接收用户问题，只请求模型一次；有工具调用则执行第一个工具并直接返回结果。
+     * 没有工具调用则返回模型文本，本方法不会把工具结果再次交给模型。
+     */
     public String chatWithTools(String question) {
         JsonNode choice = requestChoice(List.of(Map.of("role", "user", "content", question)), "auto");
         JsonNode message = choice.path("message");
@@ -91,6 +99,11 @@ public class QwenService implements LlmClient {
         return toolExecutor.execute(toolName);
     }
 
+    /**
+     * 将调用方准备好的对话记录发送给模型，返回回答文本，不附带工具说明。
+     * 使用工具结果时，messages 应包含用户消息、原始 assistant 工具调用消息，
+     * 以及带有对应 tool_call_id 的 tool 结果消息；本方法不自动组装这些记录。
+     */
     public String getFinalAnswer(List<Map<String, Object>> messages) {
         //组装请求体
         Map<String, Object> requestBody = Map.of(
@@ -108,6 +121,10 @@ public class QwenService implements LlmClient {
                 .asText();
     }
 
+    /**
+     * 携带对话记录和工具说明请求模型，返回第一条完整 choice。
+     * toolChoice 为 auto 时由模型决定是否调用工具，为 none 时禁止工具调用。
+     */
     private JsonNode requestChoice(List<Object> messages, String toolChoice) {
         Map<String, Object> requestBody = Map.of(
                 "model", model,
@@ -116,10 +133,11 @@ public class QwenService implements LlmClient {
                 "tool_choice", toolChoice
         );
 
-        //真正发送 HTTP 请求，模型提出工具调用
+        //真正发送 HTTP 请求，模型可能返回普通文本或工具调用；none 时不应提出工具调用。
         return sendRequest(requestBody);
     }
 
+    /** 返回可用工具的 JSON Schema 描述；当前仅支持无参数的 get_project_info。 */
     private List<Map<String, Object>> toolDefinitions() {
         //工具描述
         return List.of(Map.of(
@@ -137,6 +155,10 @@ public class QwenService implements LlmClient {
                 ));
     }
 
+    /**
+     * 使用密钥向千问发送请求，检查 choices 和 message 结构，返回第一条 choice。
+     * HTTP 请求失败时由 RestClient 抛出异常；响应结构异常时抛出 IllegalStateException。
+     */
     private JsonNode sendRequest(Map<String, Object> requestBody) {
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException("请配置 DASHSCOPE_API_KEY");
@@ -149,7 +171,7 @@ public class QwenService implements LlmClient {
                 .retrieve()
                 .body(JsonNode.class);
 
-        //查响应是否有效
+        //检查响应是否包含 choice 和 message；这里不检查回答文本是否为空。
         if (response == null || !response.path("choices").isArray()
                 || response.path("choices").isEmpty()) {
             throw new IllegalStateException(
@@ -165,6 +187,7 @@ public class QwenService implements LlmClient {
         return response.path("choices").get(0);
     }
 
+    /** 从 assistant 消息提取工具调用数组；缺失或 null 时返回空数组，类型错误时抛出异常。 */
     private JsonNode getToolCalls(JsonNode message) {
         JsonNode toolCalls = message.path("tool_calls");
         if (toolCalls.isMissingNode() || toolCalls.isNull()) {
@@ -176,6 +199,10 @@ public class QwenService implements LlmClient {
         return toolCalls;
     }
 
+    /**
+     * 为多轮 chat 流程检查工具名称和参数，再交给执行器。
+     * 当前工具要求 arguments 是空 JSON 对象；不支持的名称或无效参数返回工具错误文本。
+     */
     private String executeToolWithArguments(JsonNode toolCall, String name) {
         if (!"get_project_info".equals(name)) {
             return "工具错误：不支持的工具 " + name;
