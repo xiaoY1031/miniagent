@@ -9,14 +9,13 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.*;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class QwenServiceTest {
-    /** 验证最终回答请求发送完整消息历史、不携带工具说明，并从完整响应提取正文。 */
+    /** 验证请求不携带工具说明，返回包含响应 ID 和 choices 的完整 JSON。 */
     @Test
-    void extractsFinalAnswerFromResponse() {
+    void returnsFullResponseForFinalAnswer() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         QwenService service = new QwenService("test-key", "https://example.test/v1",
@@ -27,23 +26,30 @@ class QwenServiceTest {
                 .andRespond(withSuccess("""
                         {"id":"response_1","choices":[{"message":{"role":"assistant","content":"CampusX 使用 Redis。"}}]}
                         """, MediaType.APPLICATION_JSON));
-        assertEquals("CampusX 使用 Redis。", service.getFinalAnswer(java.util.List.of(
-                java.util.Map.of("role", "tool", "tool_call_id", "call_1", "content", "Redis"))));
+        var response = service.getFinalAnswer(java.util.List.of(
+                java.util.Map.of("role", "tool", "tool_call_id", "call_1", "content", "Redis")));
+        assertEquals("response_1", response.path("id").asText());
+        assertEquals("CampusX 使用 Redis。", response.path("choices").get(0)
+                .path("message").path("content").asText());
         server.verify();
     }
 
-    /** 验证缺少回答正文时明确报错，不把 null 当作有效文本返回。 */
+    /** 验证正文为 null 时仍保留工具调用信息，供后续循环解析，不执行工具。 */
     @Test
-    void rejectsFinalResponseWithoutAnswer() {
+    void preservesToolCallsInFullResponse() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         QwenService service = new QwenService("test-key", "https://example.test/v1",
                 "qwen-plus", new ToolExecutor(new ProjectInfoTool()), new ObjectMapper(), builder);
         server.expect(requestTo("https://example.test/v1/chat/completions"))
                 .andRespond(withSuccess("""
-                        {"choices":[{"message":{"role":"assistant","content":null}}]}
+                        {"choices":[{"message":{"role":"assistant","content":null,
+                        "tool_calls":[{"id":"call_1","type":"function","function":{
+                        "name":"get_project_info","arguments":"{}"}}]}}]}
                         """, MediaType.APPLICATION_JSON));
-        assertThrows(IllegalStateException.class, () -> service.getFinalAnswer(java.util.List.of()));
+        var response = service.getFinalAnswer(java.util.List.of());
+        assertEquals("get_project_info", response.path("choices").get(0).path("message")
+                .path("tool_calls").get(0).path("function").path("name").asText());
         server.verify();
     }
 

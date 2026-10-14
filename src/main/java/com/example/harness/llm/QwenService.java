@@ -100,11 +100,12 @@ public class QwenService implements LlmClient {
     }
 
     /**
-     * 将调用方准备好的对话记录发送给模型，返回回答文本，不附带工具说明。
+     * 将调用方准备好的对话记录发送给模型，返回完整 JSON 响应，不附带工具说明。
+     * 由调用方判断 content 和 tool_calls，不在本方法中提取最终答案。
      * 使用工具结果时，messages 应包含用户消息、原始 assistant 工具调用消息，
      * 以及带有对应 tool_call_id 的 tool 结果消息；本方法不自动组装这些记录。
      */
-    public String getFinalAnswer(List<Map<String, Object>> messages) {
+    public JsonNode getFinalAnswer(List<Map<String, Object>> messages) {
         //组装请求体
         Map<String, Object> requestBody = Map.of(
                 "model", model,
@@ -115,8 +116,8 @@ public class QwenService implements LlmClient {
         //向大模型发送 HTTP 请求，模型根据工具结果组织回答
         JsonNode response = sendRequest(requestBody);
 
-        //取出模型回答并返回
-        return extractAnswer(response);
+        //返回完整模型响应，供后续 Agent Loop 判断回答或工具调用。
+        return response;
     }
 
     /**
@@ -212,7 +213,7 @@ public class QwenService implements LlmClient {
 
     /**
      * 为多轮 chat 流程检查工具名称和参数，再交给执行器。
-     * 当前工具要求 arguments 是空 JSON 对象；不支持的名称或无效参数返回工具错误文本。
+     * 当前工具要求 arguments 是空的 JSON 对象；不支持的名称或无效参数返回工具错误文本。
      */
     private String executeToolWithArguments(JsonNode toolCall, String name) {
         if (!"get_project_info".equals(name)) {
