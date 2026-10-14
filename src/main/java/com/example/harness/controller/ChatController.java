@@ -16,7 +16,7 @@ public class ChatController {
         this.qwenService = qwenService;
     }
 
-    /** 接收 message，执行单次模型请求及第一个工具调用，将结果封装为 answer 返回。 */
+    /** 接收 message，执行工具并将结果交回模型，将最终回答封装为 answer 返回。 */
     @PostMapping
     public Map<String, String> chat(
             @RequestBody ChatRequest request) {

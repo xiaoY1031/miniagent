@@ -53,9 +53,9 @@ class QwenServiceTest {
         server.verify();
     }
 
-    /** 模拟模型提出工具调用，验证只执行第一个工具并直接返回结果。 */
+    /** 模拟工具调用及最终回答，验证保留 assistant 消息并携带匹配 ID 回传工具结果。 */
     @Test
-    void executesFirstToolCallAndReturnsItsResult() {
+    void executesToolAndReturnsModelFinalAnswer() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         ToolExecutor tool = org.mockito.Mockito.mock(ToolExecutor.class);
@@ -71,7 +71,18 @@ class QwenServiceTest {
                         "tool_calls":[{"id":"call_1","type":"function","function":{
                         "name":"get_project_info","arguments":"{}"}}]}}]}
                         """, MediaType.APPLICATION_JSON));
-        assertEquals("CampusX 项目信息", service.chatWithTools("查询 CampusX 的技术栈"));
+        server.expect(requestTo("https://example.test/v1/chat/completions"))
+                .andExpect(jsonPath("$.messages[0].content").value("查询 CampusX 的技术栈"))
+                .andExpect(jsonPath("$.messages[1].role").value("assistant"))
+                .andExpect(jsonPath("$.messages[1].tool_calls[0].id").value("call_1"))
+                .andExpect(jsonPath("$.messages[2].role").value("tool"))
+                .andExpect(jsonPath("$.messages[2].tool_call_id").value("call_1"))
+                .andExpect(jsonPath("$.messages[2].content").value("CampusX 项目信息"))
+                .andExpect(jsonPath("$.tools").doesNotExist())
+                .andRespond(withSuccess("""
+                        {"choices":[{"message":{"role":"assistant","content":"这是模型整理后的项目信息。"}}]}
+                        """, MediaType.APPLICATION_JSON));
+        assertEquals("这是模型整理后的项目信息。", service.chatWithTools("查询 CampusX 的技术栈"));
         org.mockito.Mockito.verify(tool).execute("get_project_info");
         org.mockito.Mockito.verifyNoMoreInteractions(tool);
         server.verify();

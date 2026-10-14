@@ -3,6 +3,7 @@ package com.example.harness.llm;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.example.harness.tool.ToolExecutor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -80,11 +81,13 @@ public class QwenService implements LlmClient {
     }
 
     /**
-     * 接收用户问题，只请求模型一次；有工具调用则执行第一个工具并直接返回结果。
-     * 没有工具调用则返回模型文本，本方法不会把工具结果再次交给模型。
+     * 接收用户问题；有工具调用时执行工具、追加结果，再请求模型生成最终回答。
+     * 没有工具调用则直接返回模型文本；本阶段最多请求模型两次，不循环调用工具。
      */
     public String chatWithTools(String question) {
-        JsonNode choice = requestChoice(List.of(Map.of("role", "user", "content", question)), "auto");
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "user", "content", question));
+        JsonNode choice = requestChoice(new ArrayList<>(messages), "auto");
         JsonNode message = choice.path("message");
         JsonNode toolCalls = getToolCalls(message);
 
@@ -93,10 +96,27 @@ public class QwenService implements LlmClient {
             return message.path("content").asText();
         }
 
-        // 先执行模型请求的第一个工具
-        JsonNode toolCall = toolCalls.get(0);
-        String toolName = toolCall.path("function").path("name").asText();
-        return toolExecutor.execute(toolName);
+        // 保留模型原始的 assistant 消息，包含 tool_calls 和可能为 null 的 content。
+        messages.add(objectMapper.convertValue(message, new TypeReference<Map<String, Object>>() {}));
+
+        // 执行模型请求的工具；每个调用都必须追加对应结果，才能完整回传工具调用记录。
+        for (JsonNode toolCall : toolCalls) {
+            String toolCallId = toolCall.path("id").asText();
+            String toolName = toolCall.path("function").path("name").asText();
+            if (toolCallId.isBlank()) {
+                throw new IllegalStateException("千问返回的工具调用缺少 ID");
+            }
+            String result = toolExecutor.execute(toolName);
+            messages.add(Map.of(
+                    "role", "tool",
+                    "tool_call_id", toolCallId,
+                    "content", result
+            ));
+        }
+
+        // 把工具结果交回模型，由模型组织本次最终回答。
+        JsonNode nextResponse = getFinalAnswer(messages);
+        return extractAnswer(nextResponse);
     }
 
     /**
